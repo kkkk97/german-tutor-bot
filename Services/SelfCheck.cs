@@ -43,8 +43,16 @@ public static class SelfCheck
         ExpectStep(engine, chatId, TutorStep.Stem, card, pronoun);
 
         Advance(engine, chatId, card.Stem ?? "немає регулярної основи", TutorStep.Type, card, pronoun, "основа");
-        Advance(engine, chatId, TypeAnswer(card), TutorStep.Ending, card, pronoun, "тип");
-        Advance(engine, chatId, card.HasStandardEndings ? "-" + card.Endings[pronoun] : "немає стандартного закінчення", TutorStep.Build, card, pronoun, "закінчення");
+        if (card.HasStandardEndings)
+        {
+            Advance(engine, chatId, TypeAnswer(card), TutorStep.Ending, card, pronoun, "тип");
+            Advance(engine, chatId, "-" + card.Endings[pronoun], TutorStep.Build, card, pronoun, "закінчення");
+        }
+        else
+        {
+            Advance(engine, chatId, TypeAnswer(card), TutorStep.Build, card, pronoun, "тип");
+        }
+
         Advance(engine, chatId, card.Forms[pronoun], TutorStep.Done, card, pronoun, "форма");
     }
 
@@ -147,12 +155,46 @@ public static class SelfCheck
         MustBeSafe(shortEnding.FallbackReply, "-st");
 
         WalkUntilBuild(engine, 650, "sehen", "er");
-        var otherPerson = engine.Handle(650, "seht");
-        if (!otherPerson.LogSummary.Contains("person", StringComparison.Ordinal))
-            throw new InvalidOperationException("seht для er має розпізнаватися як форма іншої особи.");
-        MustBeSafe(otherPerson.FallbackReply, "seht");
+        var plainVowel = engine.Handle(650, "seht");
+        if (!plainVowel.LogSummary.Contains("vowel", StringComparison.Ordinal))
+            throw new InvalidOperationException("seht для sehen/er має вказувати на незмінену голосну.");
+        MustBeSafe(plainVowel.FallbackReply, "seht");
         if (!engine.Handle(650, "sieht").LogSummary.Contains("ok", StringComparison.Ordinal))
             throw new InvalidOperationException("sieht має бути формою sehen/er.");
+
+        WalkUntilBuild(engine, 652, "schlafen", "er");
+        var noUmlaut = engine.Handle(652, "schlaft");
+        if (!noUmlaut.LogSummary.Contains("vowel", StringComparison.Ordinal) || !noUmlaut.FallbackReply.Contains("умлаут", StringComparison.Ordinal))
+            throw new InvalidOperationException("schlaft для er має просити умлаут, а не інший займенник.");
+        MustBeSafe(noUmlaut.FallbackReply, "schlaft");
+        var otherPerson = engine.Handle(652, "schläfst");
+        if (!otherPerson.LogSummary.Contains("person", StringComparison.Ordinal))
+            throw new InvalidOperationException("schläfst для er має лишатися формою іншого займенника.");
+        MustBeSafe(otherPerson.FallbackReply, "schläfst");
+        if (!engine.Handle(652, "schläft").LogSummary.Contains("ok", StringComparison.Ordinal))
+            throw new InvalidOperationException("schläft має бути формою schlafen/er.");
+
+        var earlyEnding = engine.StartPractice(655, "haben", "ich");
+        MustBeSafe(earlyEnding.FallbackReply, "haben раннє закінчення");
+        engine.Handle(655, "hab");
+        var skipped = engine.Handle(655, "звичайного закінчення немає");
+        if (engine.StepOf(655) != nameof(TutorStep.Build) || !skipped.LogSummary.Contains("ok", StringComparison.Ordinal))
+            throw new InvalidOperationException("Рання фраза про відсутнє закінчення має перестрибнути до збирання.");
+        MustBeSafe(skipped.FallbackReply, "раннє закінчення");
+
+        var tooSoon = engine.StartPractice(656, "machen", "ich");
+        engine.Handle(656, "mach");
+        var refused = engine.Handle(656, "звичайного закінчення немає");
+        if (engine.StepOf(656) != nameof(TutorStep.Type) || !refused.LogSummary.Contains("ending-too-early", StringComparison.Ordinal))
+            throw new InvalidOperationException("У слабкого дієслова рання відмова від закінчення не зараховується.");
+        MustBeSafe(refused.FallbackReply, "рання відмова");
+
+        var byButton = engine.StartPractice(657, "werden", "er");
+        engine.Handle(657, "werd");
+        var irregularButton = engine.Handle(657, "Неправильне");
+        if (engine.StepOf(657) != nameof(TutorStep.Build) || !irregularButton.LogSummary.Contains("ok", StringComparison.Ordinal))
+            throw new InvalidOperationException("Кнопка «Неправильне» має одразу вести до збирання.");
+        MustBeSafe(irregularButton.FallbackReply, "кнопка неправильне");
 
         WalkUntilBuild(engine, 660, "haben", "du");
         var glued = engine.Handle(660, "habst");
@@ -185,8 +227,15 @@ public static class SelfCheck
         var card = VerbCatalog.Find(infinitive) ?? throw new InvalidOperationException(infinitive);
         engine.StartPractice(chatId, infinitive, pronoun);
         engine.Handle(chatId, card.Stem ?? "немає регулярної основи");
-        engine.Handle(chatId, TypeAnswer(card));
-        var ending = engine.Handle(chatId, card.HasStandardEndings ? "-" + card.Endings[pronoun] : "немає стандартного закінчення");
+        var typed = engine.Handle(chatId, TypeAnswer(card));
+        if (!card.HasStandardEndings)
+        {
+            if (engine.StepOf(chatId) != nameof(TutorStep.Build) || !typed.LogSummary.Contains("ok", StringComparison.Ordinal))
+                throw new InvalidOperationException($"{infinitive}/{pronoun} не дійшло до збирання: {typed.LogSummary}");
+            return;
+        }
+
+        var ending = engine.Handle(chatId, "-" + card.Endings[pronoun]);
         if (engine.StepOf(chatId) != nameof(TutorStep.Build))
             throw new InvalidOperationException($"{infinitive}/{pronoun} не дійшло до збирання: {ending.LogSummary}");
     }

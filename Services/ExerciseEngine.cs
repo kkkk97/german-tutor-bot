@@ -143,6 +143,28 @@ public sealed partial class ExerciseEngine
                 useModel: true);
         }
 
+        if (session.Step == TutorStep.Type && SaysNoGlueEnding(userText))
+        {
+            if (!session.Card.HasStandardEndings)
+            {
+                session.Step = TutorStep.Build;
+                session.Attempts = 0;
+                return Finish(
+                    session,
+                    "учень одразу сказав, що звичайного закінчення немає",
+                    "Підтверди без повторення відповіді і постав лише питання збирання. Форму не називай.",
+                    Vary("Так.", "Сходиться.", "Добре.") + "\n" + Question(session),
+                    "ok");
+            }
+
+            return Finish(
+                session,
+                "учень зарано відмовився від закінчення",
+                "Скажи, що в цього дієслова закінчення звичайне, і повтори питання типу. Закінчення не називай.",
+                "Тут закінчення якраз звичайне.\n" + Question(session),
+                "ending-too-early");
+        }
+
         var verdict = session.Step switch
         {
             TutorStep.Stem => CheckStem(session.Card, userText),
@@ -156,6 +178,8 @@ public sealed partial class ExerciseEngine
         {
             session.Step = Next(session.Step);
             session.Attempts = 0;
+            if (session.Step == TutorStep.Ending && !session.Card.HasStandardEndings)
+                session.Step = TutorStep.Build;
             if (session.Step == TutorStep.Done)
             {
                 return Finish(
@@ -510,6 +534,14 @@ public sealed partial class ExerciseEngine
         return classOk && vowelOk ? Verdict.Ok() : Verdict.Bad("class", retry);
     }
 
+    private static bool SaysNoGlueEnding(string text)
+    {
+        var value = text.ToLowerInvariant();
+        var aboutEnding = value.Contains("закінч") || value.Contains("не скле") || value.Contains("нестандарт");
+        var denial = value.Contains("нема") || value.Contains("не скле") || value.Contains("не за правил") || value.Contains("особлив");
+        return aboutEnding && denial;
+    }
+
     private static Verdict CheckEnding(VerbCard card, string pronoun, string text)
     {
         var value = text.ToLowerInvariant();
@@ -517,7 +549,7 @@ public sealed partial class ExerciseEngine
 
         if (!card.HasStandardEndings)
         {
-            return saysNone
+            return saysNone || value.Contains("неправиль")
                 ? Verdict.Ok()
                 : Verdict.Bad("ending", "Кнопка не підходить. Напиши своїми словами, що звичайного закінчення немає.");
         }
@@ -552,26 +584,31 @@ public sealed partial class ExerciseEngine
         if (answer == correct)
             return Verdict.Ok();
 
+        if (card.ChangedStem is not null && card.Stem is not null && card.Endings.TryGetValue(pronoun, out var ending))
+        {
+            if (pronoun is "du" or "er")
+            {
+                var unchanged = TextFold.CanonForm(card.Stem + ending);
+                if (answer == unchanged && unchanged != correct)
+                {
+                    var hint = IsUmlautChange(card)
+                        ? "Голосна лишилася як в інфінітиві. Для цього займенника потрібен умлаут. Літеру пригадай сам."
+                        : "Голосна лишилася як в інфінітиві. На кроці типу для du/er вона мала змінитися. Літеру пригадай сам.";
+                    return Verdict.Bad("vowel", hint);
+                }
+            }
+
+            var overshot = TextFold.CanonForm(card.ChangedStem + ending);
+            if (answer == overshot && overshot != correct)
+                return Verdict.Bad("spelling", "Закінчення наче на місці, але однакових приголосних підряд забагато. Запиши форму коротше.");
+        }
+
         var owners = card.Forms
             .Where(pair => TextFold.CanonForm(pair.Value) == answer)
             .Select(pair => pair.Key)
             .ToArray();
         if (owners.Length > 0 && owners.All(key => !SamePerson(key, pronoun)))
             return Verdict.Bad("person", "Це форма іншого займенника. Залишаємось на тому, що в завданні.");
-
-        if (card.ChangedStem is not null && card.Endings.TryGetValue(pronoun, out var ending))
-        {
-            var overshot = TextFold.CanonForm(card.ChangedStem + ending);
-            if (answer == overshot && overshot != correct)
-                return Verdict.Bad("spelling", "Закінчення наче на місці, але однакових приголосних підряд забагато. Запиши форму коротше.");
-
-            if (card.Stem is not null && pronoun is "du" or "er")
-            {
-                var unchanged = TextFold.CanonForm(card.Stem + ending);
-                if (answer == unchanged && unchanged != correct)
-                    return Verdict.Bad("vowel", "Голосна лишилася як в інфінітиві. На кроці типу для du/er вона мала змінитися. Літеру пригадай сам.");
-            }
-        }
 
         if (card.VowelChanges
             && pronoun is not "du" and not "er"
@@ -625,6 +662,15 @@ public sealed partial class ExerciseEngine
     {
         var tokens = TextFold.LatinTokens(text).ToHashSet(StringComparer.Ordinal);
         return card.Forms.Values.Any(form => tokens.Contains(TextFold.Fold(form)));
+    }
+
+    private static bool IsUmlautChange(VerbCard card)
+    {
+        var stem = TextFold.Fold(card.Stem ?? "");
+        var changed = TextFold.Fold(card.ChangedStem ?? "");
+        return (changed.Contains("ae", StringComparison.Ordinal) && !stem.Contains("ae", StringComparison.Ordinal))
+            || (changed.Contains("oe", StringComparison.Ordinal) && !stem.Contains("oe", StringComparison.Ordinal))
+            || (changed.Contains("ue", StringComparison.Ordinal) && !stem.Contains("ue", StringComparison.Ordinal));
     }
 
     private static bool SamePerson(string key, string pronoun) =>
