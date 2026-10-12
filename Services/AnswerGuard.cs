@@ -48,7 +48,7 @@ public static partial class AnswerGuard
         {
             "ich", "wir", "ihr", "sie",
             "praesens", "presens",
-            "practice", "reset", "help", "start", "status"
+            "practice", "reset", "help", "start", "status", "types"
         };
 
         foreach (var verb in VerbCatalog.All)
