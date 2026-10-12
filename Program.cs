@@ -4,6 +4,7 @@ using Telegram.Bot;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types.ReplyMarkups;
 
 if (args.Contains("--self-check"))
 {
@@ -85,6 +86,9 @@ async Task HandleUpdateAsync(ITelegramBotClient client, Update update, Cancellat
             case "/help":
                 await client.SendMessage(chatId, engine.HelpText, cancellationToken: cancellationToken);
                 return;
+            case "/types":
+                await client.SendMessage(chatId, engine.TypesText, cancellationToken: cancellationToken);
+                return;
             case "/status":
                 await client.SendMessage(chatId, engine.Describe(chatId), cancellationToken: cancellationToken);
                 return;
@@ -94,6 +98,7 @@ async Task HandleUpdateAsync(ITelegramBotClient client, Update update, Cancellat
                 await client.SendMessage(
                     chatId,
                     "Діалог скинуто. Надішли /practice, щоб почати нову вправу.",
+                    replyMarkup: new ReplyKeyboardRemove(),
                     cancellationToken: cancellationToken);
                 return;
             case "/practice":
@@ -154,10 +159,12 @@ async Task DeliverAsync(
     }
 
     reply = AnswerGuard.Sanitize(reply, turn.FallbackReply);
+    if (reply.Length > 280)
+        reply = turn.FallbackReply;
     if (reply.Length > 4000)
         reply = reply[..4000] + "…";
 
-    await client.SendMessage(chatId, reply, cancellationToken: cancellationToken);
+    await client.SendMessage(chatId, reply, replyMarkup: Markup(turn.Keyboard), cancellationToken: cancellationToken);
 }
 
 async Task KeepTypingAsync(ITelegramBotClient client, long chatId, CancellationToken cancellationToken)
@@ -186,6 +193,26 @@ Task HandleErrorAsync(ITelegramBotClient client, Exception exception, HandleErro
     Console.Error.WriteLine($"[помилка:{source}] {exception.GetType().Name}: {exception.Message}");
     return Task.CompletedTask;
 }
+
+static ReplyMarkup Markup(BotKeyboard keyboard) => keyboard switch
+{
+    BotKeyboard.Types => new ReplyKeyboardMarkup([
+        ["Слабке", "Сильне", "Неправильне"]
+    ])
+    {
+        ResizeKeyboard = true,
+        IsPersistent = true
+    },
+    BotKeyboard.Endings => new ReplyKeyboardMarkup([
+        ["-e", "-st", "-t"],
+        ["-en", "-est", "-et"]
+    ])
+    {
+        ResizeKeyboard = true,
+        IsPersistent = true
+    },
+    _ => new ReplyKeyboardRemove()
+};
 
 static (string Command, string? Argument) ParseCommand(string text)
 {

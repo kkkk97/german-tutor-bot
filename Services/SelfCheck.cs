@@ -9,6 +9,7 @@ public static class SelfCheck
         VerbCatalog.Validate();
         MustBeSafe(new ExerciseEngine().StartText, "стартове повідомлення");
         MustBeSafe(new ExerciseEngine().HelpText, "довідка");
+        MustBeSafe(new ExerciseEngine().TypesText, "типи дієслів");
         MustBeSafe(AnswerGuard.LastResort, "запасна репліка");
 
         if (!AnswerGuard.Leaks("Правильна форма: du sprichst"))
@@ -83,6 +84,11 @@ public static class SelfCheck
         if (engine.StepOf(500) != nameof(TutorStep.Stem))
             throw new InvalidOperationException("Питання про термін не повинно зараховувати крок.");
 
+        var rude = engine.Handle(500, "ти тупий");
+        if (engine.StepOf(500) != nameof(TutorStep.Stem) || rude.UseModel || !rude.FallbackReply.StartsWith("Сам такий.", StringComparison.Ordinal))
+            throw new InvalidOperationException("Образа має лишити крок і відповісти без моделі.");
+        MustBeSafe(rude.FallbackReply, "образа");
+
         for (var attempt = 0; attempt < 3; attempt++)
             engine.Handle(500, "xxx");
         var narrowed = engine.Handle(500, "yyy");
@@ -110,9 +116,10 @@ public static class SelfCheck
         var partial = engine.StartPractice(610, "sprechen", "du");
         MustBeSafe(partial.FallbackReply, "sprechen старт");
         engine.Handle(610, "sprech");
-        var onlyStrong = engine.Handle(610, "сильне");
-        if (engine.StepOf(610) != nameof(TutorStep.Type) || !onlyStrong.LogSummary.Contains("type-partial", StringComparison.Ordinal))
-            throw new InvalidOperationException("Саме слово «сильне» ще не повна відповідь.");
+        var onlyStrong = engine.Handle(610, "Сильне");
+        if (engine.StepOf(610) != nameof(TutorStep.Ending) || !onlyStrong.LogSummary.Contains("ok", StringComparison.Ordinal))
+            throw new InvalidOperationException("Кнопка «Сильне» має зараховувати тип.");
+        MustBeSafe(onlyStrong.FallbackReply, "кнопка сильне");
 
         WalkUntilBuild(engine, 620, "essen", "du");
         var crowded = engine.Handle(620, "issst");

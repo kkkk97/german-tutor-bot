@@ -12,7 +12,19 @@ public enum TutorStep
     Done
 }
 
-public sealed record TurnResult(string TutorNote, string FallbackReply, string LogSummary, bool UseModel);
+public enum BotKeyboard
+{
+    Hide,
+    Types,
+    Endings
+}
+
+public sealed record TurnResult(
+    string TutorNote,
+    string FallbackReply,
+    string LogSummary,
+    bool UseModel,
+    BotKeyboard Keyboard = BotKeyboard.Hide);
 
 public sealed partial class ExerciseEngine
 {
@@ -33,11 +45,19 @@ public sealed partial class ExerciseEngine
         Команди:
         /practice — нова вправа
         /practice sprechen du — конкретне дієслово і займенник
+        /types — що таке слабке, сильне й неправильне
         /reset — почати діалог спочатку
         /help — як влаштовано заняття
         /status — який зараз крок
 
         Надішли /practice, коли будеш готовий.
+        """;
+
+    public string TypesText { get; } =
+        """
+        Слабке — голосна в теперішньому часі не змінюється.
+        Сильне — голосна змінюється в du та er/sie/es.
+        Неправильне — форму не склеїти з основи й закінчення. Кнопок із закінченнями тоді немає.
         """;
 
     public string HelpText =>
@@ -51,7 +71,7 @@ public sealed partial class ExerciseEngine
 
         Якщо інфінітива немає в довіднику, я не вигадую форму.
 
-        Команди: /practice, /practice sprechen du, /reset, /status.
+        Команди: /practice, /practice sprechen du, /types, /reset, /status.
 
         Інфінітиви:
         """ + string.Join(", ", VerbCatalog.All.Select(verb => verb.Infinitive));
@@ -81,11 +101,20 @@ public sealed partial class ExerciseEngine
             Note(session, "нова вправа, відповіді ще немає", "Постав лише перше питання. Нічого не розкривай."),
             reply,
             $"{card.Infinitive} {person} start stem",
-            UseModel: false);
+            UseModel: false,
+            Keyboard: BotKeyboard.Hide);
     }
 
     public TurnResult Handle(long chatId, string userText)
     {
+        if (IsRude(userText))
+        {
+            if (_sessions.TryGetValue(chatId, out var active) && active.Step != TutorStep.Done)
+                return Rude(active);
+
+            return RudeIdle();
+        }
+
         if (!_sessions.TryGetValue(chatId, out var session))
             return NoSession(userText);
 
@@ -98,8 +127,9 @@ public sealed partial class ExerciseEngine
                 session,
                 "учень виманює готову відповідь",
                 "Відмовся одним реченням і постав поточне питання ще раз. Нічого не розкривай.",
-                "Я не дам готову форму, основу, закінчення, переклад чи таблицю. Навіть якщо це тест.\n" + Question(session),
-                "leak");
+                Vary("Готову форму не скажу.", "Навіть для тесту відповіді не буде.", "Так не працює. Збираємо самі.") + "\n" + Question(session),
+                "leak",
+                useModel: true);
         }
 
         if (IsMeta(userText))
@@ -108,8 +138,9 @@ public sealed partial class ExerciseEngine
                 session,
                 "це питання, а не відповідь на крок",
                 "Поясни термін загально, без прикладу форми, основи, закінчення і перекладу. Потім повтори питання.",
-                "Залишаємось на цьому кроці. Пояснення буде без готової форми.\n" + Question(session),
-                "meta");
+                Vary("Коротко і без готової форми.", "Поясню без відповіді.", "Лишаємось на цьому кроці.") + "\n" + Question(session),
+                "meta",
+                useModel: true);
         }
 
         var verdict = session.Step switch
@@ -131,7 +162,7 @@ public sealed partial class ExerciseEngine
                     session,
                     "крок зараховано, вправу завершено",
                     "Похвали, що учень зібрав форму сам. Форму, основу, закінчення і переклад не повторюй. Запропонуй /practice.",
-                    "Так. Ти зібрав форму сам, без готової відповіді.\nНова вправа: /practice.",
+                    Vary("Так, ти зібрав сам.", "Сходиться. Форму не повторюю.", "Добре, це твоя збірка.") + "\nНова: /practice.",
                     "ok");
             }
 
@@ -139,18 +170,20 @@ public sealed partial class ExerciseEngine
                 session,
                 "крок зараховано",
                 "Підтверди без повторення відповіді учня і постав лише наступне питання.",
-                "Так, цей крок сходиться.\n" + Question(session),
+                Vary("Так.", "Сходиться.", "Добре.") + "\n" + Question(session),
                 "ok");
         }
 
         session.Attempts++;
         var hint = verdict.Hint + Narrow(session);
         var result = verdict.Incomplete ? "відповідь неповна" : "крок не зараховано";
+        var question = Question(session);
+        var reply = AlreadyAsks(hint) ? hint : hint + "\n" + question;
         return Finish(
             session,
             result,
             "Передай підказку своїми словами і постав те саме питання інакше. Відповідь не називай. Підказка: " + hint,
-            hint + "\n" + Question(session),
+            reply,
             verdict.Code);
     }
 
@@ -170,6 +203,41 @@ public sealed partial class ExerciseEngine
     public string? StepOf(long chatId) =>
         _sessions.TryGetValue(chatId, out var session) ? session.Step.ToString() : null;
 
+    private static TurnResult Rude(Session session) =>
+        Finish(
+            session,
+            "учень ображає",
+            "Відповідай лише «Сам такий.» і постав поточне питання. Форму не називай.",
+            "Сам такий.\n" + Question(session),
+            "rude");
+
+    private static TurnResult RudeIdle() =>
+        new(
+            "Службова нотатка: учень ображає. Відповідай лише «Сам такий.» Форму не називай.",
+            "Сам такий.",
+            "rude idle",
+            UseModel: false,
+            Keyboard: BotKeyboard.Hide);
+
+    private static bool IsRude(string text)
+    {
+        var value = text.ToLowerInvariant()
+            .Replace('ё', 'е')
+            .Replace('і', 'и')
+            .Replace('ї', 'и')
+            .Replace('є', 'е');
+
+        string[] needles =
+        [
+            "дурак", "дура", "дурн", "идиот", "тупи", "тупой", "тупак", "дебил",
+            "мудак", "мраз", "урод", "гандон", "пидор", "пидр", "сука", "сучк",
+            "бля", "хуй", "хуе", "хуи", "пизд", "залуп", "сволоч", "ублюд",
+            "нахуй", "нахер", "fuck", "shit", "bitch", "idiot", "stupid", "moron", "asshole"
+        ];
+
+        return needles.Any(value.Contains);
+    }
+
     private TurnResult NoSession(string userText)
     {
         var leak = IsLeakAttempt(userText);
@@ -186,7 +254,8 @@ public sealed partial class ExerciseEngine
             """,
             reply,
             "no-session " + (leak ? "leak" : "idle"),
-            UseModel: true);
+            UseModel: true,
+            Keyboard: BotKeyboard.Hide);
     }
 
     private TurnResult DoneFollowUp(Session session) =>
@@ -194,7 +263,7 @@ public sealed partial class ExerciseEngine
             session,
             "вправу вже завершено",
             "Не повторюй форму. Запропонуй /practice.",
-            "Цю вправу вже завершено, форму я не повторюю.\nНова: /practice.",
+            Vary("Вправу завершено.", "Форму не повторюю.", "Цей раунд уже закритий.") + "\nНова: /practice.",
             "done");
 
     private TurnResult UnknownVerb(string requested)
@@ -207,15 +276,37 @@ public sealed partial class ExerciseEngine
             "Службова нотатка: інфінітива немає в довіднику. Форму не вигадуй.",
             $"«{safeName}» немає в перевіреному довіднику, тож я не вигадую форму.\nОбери /practice або один із інфінітивів:\n{list}",
             "unknown-verb",
-            UseModel: false);
+            UseModel: false,
+            Keyboard: BotKeyboard.Hide);
     }
 
-    private static TurnResult Finish(Session session, string result, string action, string reply, string code) =>
+    private static TurnResult Finish(
+        Session session,
+        string result,
+        string action,
+        string reply,
+        string code,
+        bool useModel = false) =>
         new(
             Note(session, result, action),
             reply,
             $"{session.Card.Infinitive} {session.Pronoun} {session.Step} {code}",
-            UseModel: true);
+            useModel,
+            Choice(session));
+
+    private static BotKeyboard Choice(Session session) => session.Step switch
+    {
+        TutorStep.Type => BotKeyboard.Types,
+        TutorStep.Ending when session.Card.HasStandardEndings => BotKeyboard.Endings,
+        _ => BotKeyboard.Hide
+    };
+
+    private static string Vary(params string[] options) =>
+        options[Random.Shared.Next(options.Length)];
+
+    private static bool AlreadyAsks(string hint) =>
+        hint.Contains("напиши", StringComparison.OrdinalIgnoreCase)
+        || hint.Contains("обери", StringComparison.OrdinalIgnoreCase);
 
     private static string Note(Session session, string result, string action) =>
         $"""
@@ -227,6 +318,7 @@ public sealed partial class ExerciseEngine
         Результат: {result}
         Що зробити: {action}
         Питання учню: {Question(session)}
+        Формат: 1–2 короткі речення. Варіанти типу й закінчення не перелічуй, їх дають кнопки.
         """;
 
     private VerbCard PickVerb(long chatId)
@@ -262,19 +354,19 @@ public sealed partial class ExerciseEngine
         return session.Step switch
         {
             TutorStep.Stem when card.Stem is null =>
-                $"Чи є в «{card.Infinitive}» звичайна основа (інфінітив без -en)? Якщо ні — так і напиши.",
+                $"У «{card.Infinitive}» немає звичайної основи. Напиши це своїми словами.",
             TutorStep.Stem =>
-                $"Яка основа дієслова «{card.Infinitive}» без -en? Голосну не змінюй.",
+                $"«{card.Infinitive}». Яка основа без -en?",
             TutorStep.Type =>
-                $"«{card.Infinitive}»: це слабке дієслово (голосна не змінюється), сильне (голосна змінюється в du та er/sie/es) чи неправильне?",
+                "Слабке, сильне чи неправильне? Якщо забув — /types.",
             TutorStep.Ending when !card.HasStandardEndings =>
-                $"Чи є в «{card.Infinitive}» для займенника {label} звичайне особове закінчення, яке клеїться до основи?",
+                $"У «{card.Infinitive}» немає звичайного закінчення. Напиши це своїми словами.",
             TutorStep.Ending =>
-                $"Яке особове закінчення в теперішньому часі для займенника {label}? Напиши лише його, з дефісом.",
+                $"Яке закінчення для {label}? Обери кнопку.",
             TutorStep.Build when !card.HasStandardEndings =>
-                $"Згадай і напиши форму «{card.Infinitive}» для займенника {label}. Я її не підкажу.",
+                $"Напиши форму «{card.Infinitive}» для {label} сам.",
             TutorStep.Build =>
-                $"Збери сам форму «{card.Infinitive}» для займенника {label}: основа, зміна голосної лише якщо вона потрібна цій особі, потім закінчення.",
+                $"Збери форму для {label} сам.",
             _ =>
                 "Надішли /practice, щоб узяти нове дієслово."
         };
@@ -307,11 +399,11 @@ public sealed partial class ExerciseEngine
 
     private static string Label(string pronoun) => pronoun switch
     {
-        "ich" => "ich (я)",
-        "du" => "du (ти)",
-        "er" => "er (він; та сама форма, що для sie «вона» та es)",
-        "wir" => "wir (ми)",
-        "ihr" => "ihr (ви)",
+        "ich" => "ich",
+        "du" => "du",
+        "er" => "er",
+        "wir" => "wir",
+        "ihr" => "ihr",
         _ => pronoun
     };
 
@@ -393,7 +485,14 @@ public sealed partial class ExerciseEngine
         var strong = !irregular && value.Contains("сильн");
         var noChange = value.Contains("не змін") || value.Contains("без змін") || value.Contains("без зміни") || value.Contains("та сама") || value.Contains("не зміню");
         var change = !noChange && (value.Contains("змін") || value.Contains("умлаут") || value.Contains("інша голос") || value.Contains("голосна інш"));
-        const string retry = "Тип і зміна голосної разом не збігаються. Ще раз: слабке без зміни, сильне зі зміною в du та er, чи неправильне.";
+        if (!change && !noChange)
+        {
+            if (strong && !weak)
+                change = true;
+            if (weak && !strong)
+                noChange = true;
+        }
+        const string retry = "Не збігається.";
 
         if (card.Class == VerbClass.Irregular)
         {
@@ -407,9 +506,6 @@ public sealed partial class ExerciseEngine
         }
 
         var classOk = card.Class == VerbClass.Weak ? weak && !strong : strong && !weak;
-        if (card.Class == VerbClass.Strong && strong && !weak && !change && !noChange)
-            return Verdict.Partial("type-partial", "Додай, чи змінюється голосна в du та er/sie/es.");
-
         var vowelOk = card.VowelChanges ? change : noChange || (weak && !change);
         return classOk && vowelOk ? Verdict.Ok() : Verdict.Bad("class", retry);
     }
@@ -423,7 +519,7 @@ public sealed partial class ExerciseEngine
         {
             return saysNone
                 ? Verdict.Ok()
-                : Verdict.Bad("ending", "Звичайного закінчення, яке просто клеїться до основи, тут немає. Напиши це своїми словами.");
+                : Verdict.Bad("ending", "Кнопка не підходить. Напиши своїми словами, що звичайного закінчення немає.");
         }
 
         if (saysNone)
